@@ -1,0 +1,782 @@
+name: build-megascript
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+
+      - name: Gerar projeto megascript (tudo unificado neste arquivo)
+        run: |
+          set -e
+          mkdir -p megascript/app/src/main/cpp megascript/app/src/main/java/com/megascript/app
+          cat > megascript/settings.gradle.kts <<'MEGA_EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "megascript"
+          include(":app")
+          MEGA_EOF
+          cat > megascript/build.gradle.kts <<'MEGA_EOF'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          MEGA_EOF
+          cat > megascript/app/build.gradle.kts <<'MEGA_EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+          android {
+              namespace = "com.megascript.app"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.megascript.app"
+                  minSdk = 24
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "0.1"
+                  ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+              }
+              externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt") } }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+          }
+          MEGA_EOF
+          cat > megascript/app/src/main/AndroidManifest.xml <<'MEGA_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application
+                  android:label="megascript"
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+                  <activity android:name=".MainActivity" android:exported="true"
+                      android:windowSoftInputMode="adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          MEGA_EOF
+          cat > megascript/app/src/main/java/com/megascript/app/MainActivity.kt <<'MEGA_EOF'
+          package com.megascript.app
+          
+          import android.app.Activity
+          import android.graphics.Color
+          import android.graphics.Typeface
+          import android.os.Bundle
+          import android.text.InputType
+          import android.view.Gravity
+          import android.view.View
+          import android.view.ViewGroup.LayoutParams.MATCH_PARENT
+          import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+          import android.widget.Button
+          import android.widget.EditText
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.TextView
+          
+          object Mega {
+              init { System.loadLibrary("megascript") }
+              external fun run(code: ByteArray): ByteArray
+          }
+          
+          private val SAMPLE = """# megascript 0.1
+          def fat(n):
+              if n <= 1:
+                  return 1
+              return n * fat(n - 1)
+          
+          for i in range(1, 6):
+              print("fat", i, "=", fat(i))
+          
+          print("2 ** 40 =", 2 ** 40)
+          print("soma 1..999999 =", fastsum(1, 1000000))
+          print("mdc(48, 18) =", gcd(48, 18))
+          """
+          
+          class MainActivity : Activity() {
+              override fun onCreate(s: Bundle?) {
+                  super.onCreate(s)
+                  val g = Color.parseColor("#33FF66")
+                  val d = resources.displayMetrics.density
+                  window.statusBarColor = Color.BLACK
+                  window.navigationBarColor = Color.BLACK
+          
+                  val out = TextView(this).apply {
+                      typeface = Typeface.MONOSPACE; setTextColor(g); textSize = 13f
+                      text = "megascript 0.1\n"; setTextIsSelectable(true)
+                  }
+                  val scroll = ScrollView(this).apply { addView(out) }
+                  val inp = EditText(this).apply {
+                      typeface = Typeface.MONOSPACE; setTextColor(Color.WHITE); setHintTextColor(Color.GRAY)
+                      textSize = 14f; setBackgroundColor(Color.parseColor("#101010")); gravity = Gravity.TOP
+                      inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                          InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+                      hint = "# escreva megascript aqui"; setText(SAMPLE); setPadding(16, 16, 16, 16)
+                  }
+                  fun btn(t: String) = Button(this).apply {
+                      text = t; setTextColor(g); setBackgroundColor(Color.parseColor("#151515")); isAllCaps = false
+                  }
+                  val bRun = btn("▶ rodar"); val bTab = btn("tab"); val bClr = btn("limpar")
+                  val row = LinearLayout(this).apply {
+                      addView(bRun, LinearLayout.LayoutParams(0, WRAP_CONTENT, 2f))
+                      addView(bTab, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+                      addView(bClr, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+                  }
+                  val p = (10 * d).toInt()
+                  val root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.BLACK); setPadding(p, p, p, p)
+                      addView(scroll, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+                      addView(inp, LinearLayout.LayoutParams(MATCH_PARENT, (200 * d).toInt()))
+                      addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+                  }
+                  setContentView(root)
+          
+                  bTab.setOnClickListener { inp.text.insert(inp.selectionStart.coerceAtLeast(0), "    ") }
+                  bClr.setOnClickListener { out.text = "megascript 0.1\n" }
+                  bRun.setOnClickListener {
+                      val code = inp.text.toString()
+                      out.append("\n>>> rodar\n")
+                      bRun.isEnabled = false
+                      Thread(null, Runnable {
+                          val res = String(Mega.run(code.toByteArray()), Charsets.UTF_8)
+                          runOnUiThread {
+                              out.append(res)
+                              if (res.isNotEmpty() && !res.endsWith("\n")) out.append("\n")
+                              bRun.isEnabled = true
+                              scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
+                          }
+                      }, "mega", 16L shl 20).start()
+                  }
+              }
+          }
+          MEGA_EOF
+          cat > megascript/app/src/main/cpp/CMakeLists.txt <<'MEGA_EOF'
+          cmake_minimum_required(VERSION 3.22)
+          project(megascript C CXX ASM)
+          if(ANDROID_ABI STREQUAL "arm64-v8a")
+            set(MS_ASM asm_arm64.S)
+          else()
+            set(MS_ASM asm_x86_64.S)
+          endif()
+          add_library(megascript SHARED megascript.c jni.cpp ${MS_ASM})
+          MEGA_EOF
+          cat > megascript/app/src/main/cpp/megascript.h <<'MEGA_EOF'
+          #ifndef MEGASCRIPT_H
+          #define MEGASCRIPT_H
+          /* roda o codigo e devolve a saida (malloc; quem chama faz free) */
+          char *ms_run(const char *src);
+          #endif
+          MEGA_EOF
+          cat > megascript/app/src/main/cpp/jni.cpp <<'MEGA_EOF'
+          #include <jni.h>
+          #include <cstdlib>
+          #include <cstring>
+          extern "C" {
+          #include "megascript.h"
+          }
+          
+          extern "C" JNIEXPORT jbyteArray JNICALL
+          Java_com_megascript_app_Mega_run(JNIEnv *env, jobject, jbyteArray code) {
+              jsize n = env->GetArrayLength(code);
+              char *src = (char *)malloc((size_t)n + 1);
+              env->GetByteArrayRegion(code, 0, n, (jbyte *)src);
+              src[n] = 0;
+              char *out = ms_run(src);
+              free(src);
+              jsize m = (jsize)strlen(out);
+              jbyteArray r = env->NewByteArray(m);
+              env->SetByteArrayRegion(r, 0, m, (const jbyte *)out);
+              free(out);
+              return r;
+          }
+          MEGA_EOF
+          cat > megascript/app/src/main/cpp/asm_arm64.S <<'MEGA_EOF'
+          // megascript - nucleo rapido em assembly ARM64
+          .text
+          
+          // long ms_asm_ipow(long base, long exp)  -- exponenciacao por quadrados
+          .global ms_asm_ipow
+          .type ms_asm_ipow, %function
+          ms_asm_ipow:
+              mov x2, #1
+          1:  cbz x1, 3f
+              tbz x1, #0, 2f
+              mul x2, x2, x0
+          2:  mul x0, x0, x0
+              lsr x1, x1, #1
+              b 1b
+          3:  mov x0, x2
+              ret
+          
+          // long ms_asm_sumrange(long a, long b)  -- soma de a ate b-1 (formula fechada)
+          .global ms_asm_sumrange
+          .type ms_asm_sumrange, %function
+          ms_asm_sumrange:
+              cmp x1, x0
+              b.le 1f
+              sub x2, x1, x0
+              add x3, x0, x1
+              sub x3, x3, #1
+              mul x0, x2, x3
+              asr x0, x0, #1
+              ret
+          1:  mov x0, #0
+              ret
+          
+          // long ms_asm_gcd(unsigned long a, unsigned long b)  -- Euclides
+          .global ms_asm_gcd
+          .type ms_asm_gcd, %function
+          ms_asm_gcd:
+          1:  cbz x1, 2f
+              udiv x2, x0, x1
+              msub x2, x2, x1, x0
+              mov x0, x1
+              mov x1, x2
+              b 1b
+          2:  ret
+          MEGA_EOF
+          cat > megascript/app/src/main/cpp/asm_x86_64.S <<'MEGA_EOF'
+          # megascript - nucleo rapido em assembly x86-64 (AT&T)
+          .text
+          
+          .globl ms_asm_ipow
+          .type ms_asm_ipow, @function
+          ms_asm_ipow:
+              movq $1, %rax
+          1:  testq %rsi, %rsi
+              jz 3f
+              testq $1, %rsi
+              jz 2f
+              imulq %rdi, %rax
+          2:  imulq %rdi, %rdi
+              shrq $1, %rsi
+              jmp 1b
+          3:  ret
+          
+          .globl ms_asm_sumrange
+          .type ms_asm_sumrange, @function
+          ms_asm_sumrange:
+              xorq %rax, %rax
+              cmpq %rdi, %rsi
+              jle 1f
+              movq %rsi, %rax
+              subq %rdi, %rax
+              leaq -1(%rdi,%rsi), %rdx
+              imulq %rdx, %rax
+              sarq $1, %rax
+          1:  ret
+          
+          .globl ms_asm_gcd
+          .type ms_asm_gcd, @function
+          ms_asm_gcd:
+          1:  testq %rsi, %rsi
+              jz 2f
+              movq %rdi, %rax
+              xorq %rdx, %rdx
+              divq %rsi
+              movq %rsi, %rdi
+              movq %rdx, %rsi
+              jmp 1b
+          2:  movq %rdi, %rax
+              ret
+          
+          .section .note.GNU-stack,"",@progbits
+          MEGA_EOF
+          cat > megascript/app/src/main/cpp/megascript.c <<'MEGA_EOF'
+          /* megascript 0.1 - interpretador estilo Python, pequeno, em C.
+             Nucleo numerico (**, fastsum, gcd) em assembly. */
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          #include <ctype.h>
+          #include <stdarg.h>
+          #include <setjmp.h>
+          #include "megascript.h"
+          
+          #define MAXV 4096
+          #define MAXF 64
+          #define MAXOUT (1 << 20)
+          #define MAXSTEPS 50000000L
+          #define MAXDEPTH 400
+          #define AL(c) (isalnum((unsigned char)(c)) || (c) == '_')
+          #define AS(c) (isalpha((unsigned char)(c)) || (c) == '_')
+          
+          long long ms_asm_ipow(long long, long long);
+          long long ms_asm_sumrange(long long, long long);
+          long long ms_asm_gcd(long long, long long);
+          
+          enum { TN, TI, TS, TB };
+          typedef struct { int t; long long i; char *s; } Val;
+          typedef struct { char n[32]; Val v; } Var;
+          typedef struct { char n[32]; int line, np; char p[8][32]; } Fn;
+          typedef struct { int ind, no, co; char *tx; } Ln;
+          
+          static Ln *L; static int NL, cur;
+          static Var V[MAXV]; static int NV, base, gend, depth;
+          static Fn F[MAXF]; static int NF;
+          static char *out, *srcbuf, **pool;
+          static size_t olen, ocap, npool, cpool, poolb;
+          static jmp_buf jb; static char err[200];
+          static const char *p;
+          static int retf, brk, cnt, nx; static Val retv;
+          static long steps;
+          
+          static Val orx(void);
+          static Val call(const char *n);
+          static void exec_block(int s, int e);
+          
+          __attribute__((noreturn)) static void fail(const char *f, ...) {
+              va_list a; va_start(a, f); vsnprintf(err, sizeof err, f, a); va_end(a); longjmp(jb, 1);
+          }
+          static void raw(const char *s) {
+              size_t n = strlen(s);
+              if (olen + n + 1 > ocap) { ocap = (olen + n + 1) * 2; out = realloc(out, ocap); }
+              memcpy(out + olen, s, n + 1); olen += n;
+          }
+          static void emit(const char *s) {
+              if (olen + strlen(s) > MAXOUT) fail("saida muito grande");
+              raw(s);
+          }
+          static char *nstr(size_t n) {
+              if ((poolb += n + 17) > (64u << 20)) fail("memoria de strings esgotada");
+              char *d = malloc(n + 1); if (!d) fail("sem memoria"); d[n] = 0;
+              if (npool == cpool) { cpool = cpool ? cpool * 2 : 256; pool = realloc(pool, cpool * sizeof *pool); }
+              pool[npool++] = d; return d;
+          }
+          static char *sdup(const char *s) { size_t n = strlen(s); char *d = nstr(n); memcpy(d, s, n); return d; }
+          
+          static Val mi(long long i) { Val v = {TI, i, 0}; return v; }
+          static Val mb(int i) { Val v = {TB, !!i, 0}; return v; }
+          static Val mstr(char *s) { Val v = {TS, 0, s}; return v; }
+          static Val mn(void) { Val v = {TN, 0, 0}; return v; }
+          static long long I(Val v) { if (v.t == TI || v.t == TB) return v.i; fail("esperava um numero"); }
+          static int truthy(Val v) { return v.t == TS ? v.s[0] != 0 : v.t == TN ? 0 : v.i != 0; }
+          
+          static char *tos(Val v) {
+              static char r[8][32]; static int k;
+              if (v.t == TS) return v.s;
+              char *b = r[k++ & 7];
+              if (v.t == TI) snprintf(b, 32, "%lld", v.i);
+              else if (v.t == TB) strcpy(b, v.i ? "True" : "False");
+              else strcpy(b, "None");
+              return b;
+          }
+          
+          static Var *find(const char *n) {
+              for (int i = NV - 1; i >= base; i--) if (!strcmp(V[i].n, n)) return &V[i];
+              for (int i = (depth ? gend : 0) - 1; i >= 0; i--) if (!strcmp(V[i].n, n)) return &V[i];
+              return 0;
+          }
+          static void setvar(const char *n, Val v) {
+              for (int i = NV - 1; i >= base; i--) if (!strcmp(V[i].n, n)) { V[i].v = v; return; }
+              if (NV >= MAXV) fail("variaveis demais");
+              strncpy(V[NV].n, n, 31); V[NV].n[31] = 0; V[NV++].v = v;
+          }
+          
+          static Val binop(const char *o, Val a, Val b) {
+              if (nx) return mi(0);
+              char c = o[0];
+              if (c == '+' && (a.t == TS || b.t == TS)) {
+                  char *x = tos(a); size_t lx = strlen(x); char *y = tos(b); size_t ly = strlen(y);
+                  char *d = nstr(lx + ly); memcpy(d, x, lx); memcpy(d + lx, y, ly); return mstr(d);
+              }
+              if (c == '*' && (a.t == TS || b.t == TS)) {
+                  Val s = a.t == TS ? a : b, n = a.t == TS ? b : a;
+                  long long k = I(n); if (k < 0) k = 0;
+                  size_t l = strlen(s.s);
+                  if (l * k > MAXOUT) fail("string grande demais");
+                  char *d = nstr(l * k); for (long long i = 0; i < k; i++) memcpy(d + i * l, s.s, l);
+                  return mstr(d);
+              }
+              long long x = I(a), y = I(b);
+              switch (c) {
+              case '+': return mi(x + y);
+              case '-': return mi(x - y);
+              case '*':
+                  if (o[1] == '*') { if (y < 0) fail("expoente negativo"); return mi(ms_asm_ipow(x, y)); }
+                  return mi(x * y);
+              case '/': { if (!y) fail("divisao por zero"); long long q = x / y; if ((x % y) && ((x < 0) != (y < 0))) q--; return mi(q); }
+              case '%': { if (!y) fail("divisao por zero"); long long r = x % y; if (r && ((r < 0) != (y < 0))) r += y; return mi(r); }
+              }
+              return mn();
+          }
+          
+          static Val cmpop(const char *o, Val a, Val b) {
+              if (nx) return mi(0);
+              if ((a.t == TS) != (b.t == TS)) {
+                  if (!strcmp(o, "==")) return mb(0);
+                  if (!strcmp(o, "!=")) return mb(1);
+                  fail("tipos incomparaveis");
+              }
+              long long r = a.t == TS ? strcmp(a.s, b.s) : (a.i > b.i) - (a.i < b.i);
+              if (!strcmp(o, "==")) return mb(r == 0);
+              if (!strcmp(o, "!=")) return mb(r != 0);
+              if (!strcmp(o, "<=")) return mb(r <= 0);
+              if (!strcmp(o, ">=")) return mb(r >= 0);
+              if (!strcmp(o, "<")) return mb(r < 0);
+              return mb(r > 0);
+          }
+          
+          static void ws(void) { while (*p == ' ' || *p == '\t') p++; }
+          static int isw(const char *w) {
+              size_t n = strlen(w); ws();
+              if (strncmp(p, w, n) || AL(p[n])) return 0;
+              p += n; return 1;
+          }
+          
+          static int blockend(int i) { int j = i + 1; while (j < NL && L[j].ind > L[i].ind) j++; return j; }
+          
+          static Val callf(Fn *f, Val *a, int na) {
+              if (na != f->np) fail("%s() espera %d argumento(s)", f->n, f->np);
+              if (depth >= MAXDEPTH) fail("recursao demais");
+              if (NV + f->np >= MAXV) fail("variaveis demais");
+              if (++steps > MAXSTEPS) fail("limite de passos");
+              const char *sp = p; int ob = base, oc = cur;
+              if (depth == 0) gend = NV;
+              base = NV; depth++;
+              for (int i = 0; i < f->np; i++) { strcpy(V[NV].n, f->p[i]); V[NV++].v = a[i]; }
+              retf = 0; retv = mn();
+              exec_block(f->line + 1, blockend(f->line));
+              Val r = retf ? retv : mn();
+              retf = brk = cnt = 0;
+              NV = base; base = ob; depth--; p = sp; cur = oc;
+              return r;
+          }
+          
+          #define NEED(k) if (na != (k)) fail("%s() espera %d argumento(s)", n, k)
+          static Val call(const char *n) {
+              Val a[8]; int na = 0; p++; ws();
+              if (*p != ')') for (;;) {
+                  if (na >= 8) fail("argumentos demais");
+                  a[na++] = orx(); ws();
+                  if (*p == ',') { p++; continue; }
+                  break;
+              }
+              if (*p != ')') fail("faltou )");
+              p++;
+              if (nx) return mi(0);
+              if (!strcmp(n, "print")) {
+                  for (int i = 0; i < na; i++) { if (i) emit(" "); emit(tos(a[i])); }
+                  emit("\n"); return mn();
+              }
+              if (!strcmp(n, "len")) { NEED(1); if (a[0].t != TS) fail("len() so aceita string"); return mi(strlen(a[0].s)); }
+              if (!strcmp(n, "str")) { NEED(1); return mstr(sdup(tos(a[0]))); }
+              if (!strcmp(n, "int")) { NEED(1); return mi(a[0].t == TS ? atoll(a[0].s) : I(a[0])); }
+              if (!strcmp(n, "abs")) { NEED(1); long long x = I(a[0]); return mi(x < 0 ? -x : x); }
+              if (!strcmp(n, "min")) { NEED(2); long long x = I(a[0]), y = I(a[1]); return mi(x < y ? x : y); }
+              if (!strcmp(n, "max")) { NEED(2); long long x = I(a[0]), y = I(a[1]); return mi(x > y ? x : y); }
+              if (!strcmp(n, "pow")) { NEED(2); return binop("**", a[0], a[1]); }
+              if (!strcmp(n, "fastsum")) { NEED(2); return mi(ms_asm_sumrange(I(a[0]), I(a[1]))); }
+              if (!strcmp(n, "gcd")) {
+                  NEED(2); long long x = I(a[0]), y = I(a[1]);
+                  return mi(ms_asm_gcd(x < 0 ? -x : x, y < 0 ? -y : y));
+              }
+              for (int i = 0; i < NF; i++) if (!strcmp(F[i].n, n)) return callf(&F[i], a, na);
+              fail("funcao '%s' nao existe", n);
+          }
+          
+          static Val atom(void) {
+              ws(); char c = *p;
+              if (isdigit((unsigned char)c)) { long long n = 0; while (isdigit((unsigned char)*p)) n = n * 10 + (*p++ - '0'); return mi(n); }
+              if (c == '"' || c == '\'') {
+                  char q = *p++; const char *e = p;
+                  while (*e && *e != q) { if (*e == '\\' && e[1]) e++; e++; }
+                  if (*e != q) fail("string sem fim");
+                  char *d = nstr(e - p), *w = d;
+                  while (p < e) {
+                      if (*p == '\\' && p + 1 < e) { p++; *w++ = *p == 'n' ? '\n' : *p == 't' ? '\t' : *p; p++; }
+                      else *w++ = *p++;
+                  }
+                  *w = 0; p = e + 1; return mstr(d);
+              }
+              if (c == '(') { p++; Val v = orx(); ws(); if (*p != ')') fail("faltou )"); p++; return v; }
+              if (AS(c)) {
+                  char n[32]; int k = 0;
+                  while (AL(*p)) { if (k < 31) n[k++] = *p; p++; }
+                  n[k] = 0; ws();
+                  if (*p == '(') return call(n);
+                  if (!strcmp(n, "True")) return mb(1);
+                  if (!strcmp(n, "False")) return mb(0);
+                  if (!strcmp(n, "None")) return mn();
+                  if (nx) return mi(0);
+                  Var *v = find(n); if (!v) fail("'%s' nao definido", n);
+                  return v->v;
+              }
+              fail("sintaxe invalida perto de '%.10s'", p);
+          }
+          
+          static Val unary(void);
+          static Val powx(void) { Val a = atom(); ws(); if (p[0] == '*' && p[1] == '*') { p += 2; return binop("**", a, unary()); } return a; }
+          static Val unary(void) {
+              ws();
+              if (*p == '-') { p++; return mi(-I(unary())); }
+              if (*p == '+') { p++; return unary(); }
+              return powx();
+          }
+          static Val mulx(void) {
+              Val a = unary();
+              for (;;) {
+                  ws(); char o[3] = {0};
+                  if (p[0] == '/' && p[1] == '/') { o[0] = o[1] = '/'; p += 2; }
+                  else if (*p == '*' || *p == '/' || *p == '%') o[0] = *p++;
+                  else break;
+                  a = binop(o, a, unary());
+              }
+              return a;
+          }
+          static Val addx(void) {
+              Val a = mulx();
+              for (;;) { ws(); if (*p != '+' && *p != '-') break; char o[2] = {*p++, 0}; a = binop(o, a, mulx()); }
+              return a;
+          }
+          static Val cmpx(void) {
+              Val a = addx();
+              for (;;) {
+                  ws(); char o[3] = {0};
+                  if ((p[0] == '=' || p[0] == '!' || p[0] == '<' || p[0] == '>') && p[1] == '=') { o[0] = p[0]; o[1] = '='; p += 2; }
+                  else if (p[0] == '<' || p[0] == '>') o[0] = *p++;
+                  else break;
+                  a = cmpop(o, a, addx());
+              }
+              return a;
+          }
+          static Val notx(void) { if (isw("not")) return mb(!truthy(notx())); return cmpx(); }
+          static Val andx(void) {
+              Val a = notx();
+              while (isw("and")) { int t = truthy(a); if (!t) nx++; Val b = notx(); if (!t) nx--; if (t) a = b; }
+              return a;
+          }
+          static Val orx(void) {
+              Val a = andx();
+              while (isw("or")) { int t = truthy(a); if (t) nx++; Val b = andx(); if (t) nx--; if (!t) a = b; }
+              return a;
+          }
+          static Val ev(const char *s) {
+              p = s; Val v = orx(); ws();
+              if (*p) fail("sintaxe invalida perto de '%.10s'", p);
+              return v;
+          }
+          
+          static int kw(int j, const char *k) {
+              size_t n = strlen(k); const char *t = L[j].tx;
+              return !strncmp(t, k, n) && !AL(t[n]);
+          }
+          
+          static int isassign(const char *t, char *name, char *op, const char **rhs) {
+              const char *q = t; int n = 0;
+              if (!AS(*q)) return 0;
+              while (AL(*q)) { if (n < 31) name[n++] = *q; q++; }
+              name[n] = 0; while (*q == ' ') q++;
+              char o[3] = {0}; int k = 0;
+              if (*q && strchr("+-*/%", *q)) {
+                  o[k++] = *q++;
+                  if ((o[0] == '/' && *q == '/') || (o[0] == '*' && *q == '*')) o[k++] = *q++;
+              }
+              if (*q != '=' || q[1] == '=') return 0;
+              *rhs = q + 1; strcpy(op, o); return 1;
+          }
+          
+          static int s_if(int i, int lim) {
+              int ind = L[i].ind, j = i, done = 0;
+              for (;;) {
+                  if (!L[j].co) fail("faltou ':'");
+                  int e = blockend(j), el = kw(j, "else");
+                  if (!done) {
+                      cur = j;
+                      int ok = el ? 1 : truthy(ev(L[j].tx + (kw(j, "elif") ? 4 : 2)));
+                      if (ok) { exec_block(j + 1, e); done = 1; }
+                  }
+                  j = e;
+                  if (j < lim && L[j].ind == ind && (kw(j, "elif") || kw(j, "else"))) continue;
+                  break;
+              }
+              return j;
+          }
+          
+          static int stmt(int i, int lim) {
+              cur = i; char *t = L[i].tx;
+              if (kw(i, "def")) return blockend(i);
+              if (kw(i, "if")) return s_if(i, lim);
+              if (kw(i, "elif") || kw(i, "else")) fail("'%s' sem 'if'", kw(i, "elif") ? "elif" : "else");
+              if (kw(i, "while")) {
+                  if (!L[i].co) fail("faltou ':'");
+                  int e = blockend(i);
+                  for (;;) {
+                      cur = i;
+                      if (!truthy(ev(t + 5))) break;
+                      if (++steps > MAXSTEPS) fail("limite de passos");
+                      exec_block(i + 1, e);
+                      if (retf) break;
+                      if (brk) { brk = 0; break; }
+                      cnt = 0;
+                  }
+                  return e;
+              }
+              if (kw(i, "for")) {
+                  if (!L[i].co) fail("faltou ':'");
+                  const char *q = t + 3; while (*q == ' ') q++;
+                  char nm[32]; int k = 0;
+                  while (AL(*q)) { if (k < 31) nm[k++] = *q; q++; }
+                  nm[k] = 0; if (!k) fail("variavel do for invalida");
+                  while (*q == ' ') q++;
+                  if (strncmp(q, "in", 2) || q[2] != ' ') fail("esperava 'in'");
+                  q += 2; while (*q == ' ') q++;
+                  int e = blockend(i);
+                  if (!strncmp(q, "range", 5) && (q[5] == '(' || q[5] == ' ')) {
+                      p = q + 5; ws(); if (*p != '(') fail("esperava ( apos range");
+                      p++; ws();
+                      Val a[3]; int na = 0;
+                      if (*p != ')') for (;;) {
+                          if (na >= 3) fail("range() aceita ate 3 argumentos");
+                          a[na++] = orx(); ws();
+                          if (*p == ',') { p++; continue; }
+                          break;
+                      }
+                      if (*p != ')') fail("faltou )");
+                      p++; ws(); if (*p) fail("sintaxe invalida no for");
+                      if (!na) fail("range() precisa de argumentos");
+                      long long s0 = 0, e0, st = 1;
+                      if (na == 1) e0 = I(a[0]); else { s0 = I(a[0]); e0 = I(a[1]); if (na == 3) st = I(a[2]); }
+                      if (!st) fail("passo zero no range()");
+                      for (long long v = s0; st > 0 ? v < e0 : v > e0; v += st) {
+                          if (++steps > MAXSTEPS) fail("limite de passos");
+                          setvar(nm, mi(v)); exec_block(i + 1, e);
+                          if (retf) break;
+                          if (brk) { brk = 0; break; }
+                          cnt = 0;
+                      }
+                      return e;
+                  }
+                  Val it = ev(q);
+                  if (it.t != TS) fail("for precisa de range() ou string");
+                  size_t len = strlen(it.s);
+                  for (size_t j = 0; j < len; j++) {
+                      if (++steps > MAXSTEPS) fail("limite de passos");
+                      char *c = nstr(1); c[0] = it.s[j];
+                      setvar(nm, mstr(c)); exec_block(i + 1, e);
+                      if (retf) break;
+                      if (brk) { brk = 0; break; }
+                      cnt = 0;
+                  }
+                  return e;
+              }
+              if (kw(i, "return")) {
+                  if (depth == 0) fail("return fora de funcao");
+                  retv = t[6] ? ev(t + 6) : mn(); retf = 1; return i + 1;
+              }
+              if (kw(i, "break")) { brk = 1; return i + 1; }
+              if (kw(i, "continue")) { cnt = 1; return i + 1; }
+              if (kw(i, "pass")) return i + 1;
+              char nm[32], op[3]; const char *rhs;
+              if (isassign(t, nm, op, &rhs)) {
+                  Val v = ev(rhs);
+                  if (op[0]) { Var *x = find(nm); if (!x) fail("'%s' nao definido", nm); v = binop(op, x->v, v); }
+                  setvar(nm, v); return i + 1;
+              }
+              ev(t); return i + 1;
+          }
+          
+          static void exec_block(int s, int e) {
+              for (int i = s; i < e && !retf && !brk && !cnt;) i = stmt(i, e);
+          }
+          
+          static void load(const char *src) {
+              srcbuf = strdup(src);
+              int cap = 64, no = 0; L = malloc(cap * sizeof *L); NL = 0;
+              char *s = srcbuf;
+              while (*s) {
+                  char *nl = strchr(s, '\n'), *next;
+                  if (nl) { *nl = 0; next = nl + 1; } else next = s + strlen(s);
+                  no++;
+                  char q = 0;
+                  for (char *c = s; *c; c++) {
+                      if (q) { if (*c == '\\' && c[1]) c++; else if (*c == q) q = 0; }
+                      else if (*c == '"' || *c == '\'') q = *c;
+                      else if (*c == '#') { *c = 0; break; }
+                  }
+                  size_t n = strlen(s);
+                  while (n && (s[n - 1] == ' ' || s[n - 1] == '\t' || s[n - 1] == '\r')) s[--n] = 0;
+                  int ind = 0; char *t = s;
+                  while (*t == ' ' || *t == '\t') { ind += *t == '\t' ? 4 : 1; t++; }
+                  if (*t) {
+                      int co = 0; size_t m = strlen(t);
+                      if (t[m - 1] == ':') { co = 1; t[--m] = 0; while (m && t[m - 1] == ' ') t[--m] = 0; }
+                      if (NL == cap) { cap *= 2; L = realloc(L, cap * sizeof *L); }
+                      L[NL++] = (Ln){ind, no, co, t};
+                  }
+                  s = next;
+              }
+          }
+          
+          static void scan(void) {
+              for (int i = 0; i < NL; i++) if (kw(i, "def")) {
+                  cur = i;
+                  if (!L[i].co) fail("faltou ':'");
+                  if (NF >= MAXF) fail("funcoes demais");
+                  Fn *f = &F[NF++]; f->line = i; f->np = 0;
+                  const char *q = L[i].tx + 3; while (*q == ' ') q++;
+                  int k = 0;
+                  while (AL(*q)) { if (k < 31) f->n[k++] = *q; q++; }
+                  f->n[k] = 0; while (*q == ' ') q++;
+                  if (*q != '(') fail("esperava ( na def");
+                  q++;
+                  for (;;) {
+                      while (*q == ' ') q++;
+                      if (*q == ')') break;
+                      if (f->np >= 8) fail("parametros demais");
+                      k = 0;
+                      while (AL(*q)) { if (k < 31) f->p[f->np][k++] = *q; q++; }
+                      if (!k) fail("parametro invalido");
+                      f->p[f->np++][k] = 0;
+                      while (*q == ' ') q++;
+                      if (*q == ',') q++; else if (*q != ')') fail("parametro invalido");
+                  }
+              }
+          }
+          
+          char *ms_run(const char *src) {
+              NL = NV = NF = base = gend = depth = cur = 0;
+              retf = brk = cnt = nx = 0; steps = 0;
+              out = 0; olen = ocap = 0; L = 0; srcbuf = 0; pool = 0; npool = cpool = poolb = 0;
+              if (!setjmp(jb)) { load(src); scan(); exec_block(0, NL); }
+              else {
+                  char b[260];
+                  snprintf(b, sizeof b, "%sErro (linha %d): %s\n", olen && out[olen - 1] != '\n' ? "\n" : "",
+                           NL && cur < NL ? L[cur].no : 0, err);
+                  raw(b);
+              }
+              if (!out) raw("");
+              free(L); free(srcbuf);
+              for (size_t i = 0; i < npool; i++) free(pool[i]);
+              free(pool);
+              return out;
+          }
+          MEGA_EOF
+
+      - name: Compilar APK
+        working-directory: megascript
+        run: gradle assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: megascript-apk
+          path: megascript/app/build/outputs/apk/debug/*.apk
